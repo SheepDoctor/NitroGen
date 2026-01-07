@@ -55,7 +55,7 @@ The `--process` parameter must be the exact executable name of the game you want
 If you find our work useful, please consider citing us!
 
 ```bibtex
-@misc{magne2026nitrogenopenfoundationmodel,
+@misc{magne2026nitrogen,
       title={NitroGen: An Open Foundation Model for Generalist Gaming Agents}, 
       author={Loïc Magne and Anas Awadalla and Guanzhi Wang and Yinzhen Xu and Joshua Belofsky and Fengyuan Hu and Joohwan Kim and Ludwig Schmidt and Georgia Gkioxari and Jan Kautz and Yisong Yue and Yejin Choi and Yuke Zhu and Linxi "Jim" Fan},
       year={2026},
