@@ -6,7 +6,9 @@ from nitrogen.inference_session import InferenceSession
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Model inference server")
-    parser.add_argument("ckpt", type=str, help="Path to checkpoint file")
+    parser.add_argument("--ckpt", type=str, 
+                        default='/root/autodl-fs/hfcache/hub/models--nvidia--NitroGen/snapshots/df04e6f6c84548bcbc66824c99d8895f151af23c/ng.pt',
+                        help="Path to checkpoint file")
     parser.add_argument("--port", type=int, default=5555, help="Port to serve on")
     parser.add_argument("--old-layout", action="store_true", help="Use old layout")
     parser.add_argument("--cfg", type=float, default=1.0, help="CFG scale")
