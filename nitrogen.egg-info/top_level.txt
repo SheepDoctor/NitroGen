@@ -1,0 +1,4 @@
+assets
+debug
+nitrogen
+out

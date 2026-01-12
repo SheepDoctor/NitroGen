@@ -14,12 +14,98 @@ import time
 import vgamepad as vg
 
 import psutil
+import cv2
+import numpy as np
+
+# Add this to improve sleep accuracy on Windows
+try:
+    ctypes.windll.winmm.timeBeginPeriod(1)
+except:
+    pass
 
 assert platform.system().lower() == "windows", "This module is only supported on Windows."
 import win32process
 import win32gui
 import win32api
 import win32con
+import ctypes
+from ctypes import windll, c_int, byref
+
+
+def get_dpi_scale_factor(hwnd=None):
+    """
+    Get the DPI scaling factor for a window or the primary monitor.
+    
+    Args:
+        hwnd: Window handle. If None, gets DPI for the primary monitor.
+    
+    Returns:
+        float: DPI scaling factor (e.g., 1.0 for 100%, 1.25 for 125%, 1.5 for 150%)
+    """
+    try:
+        # Try to get DPI awareness (Windows 10+)
+        windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    except:
+        try:
+            windll.user32.SetProcessDPIAware()
+        except:
+            pass
+    
+    try:
+        if hwnd:
+            # Get DPI for specific window (Windows 10 1607+)
+            dpi = windll.user32.GetDpiForWindow(hwnd)
+            if dpi > 0:
+                return dpi / 96.0
+        
+        # Fallback: Get system DPI
+        hdc = windll.user32.GetDC(0)
+        dpi = windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+        windll.user32.ReleaseDC(0, hdc)
+        return dpi / 96.0
+    except:
+        return 1.0  # Default to no scaling
+
+
+def get_window_client_rect(hwnd):
+    """
+    Get the actual client rectangle of a window in screen coordinates,
+    accounting for DPI scaling.
+    
+    Args:
+        hwnd: Window handle
+    
+    Returns:
+        tuple: (left, top, width, height) of the client area in screen coordinates
+    """
+    # Get window rectangle
+    rect = win32gui.GetWindowRect(hwnd)
+    
+    # Get client area size
+    client_rect = win32gui.GetClientRect(hwnd)
+    client_width = client_rect[2] - client_rect[0]
+    client_height = client_rect[3] - client_rect[1]
+    
+    # Get DPI scaling
+    dpi_scale = get_dpi_scale_factor(hwnd)
+    
+    # Calculate window frame sizes
+    window_width = rect[2] - rect[0]
+    window_height = rect[3] - rect[1]
+    
+    # Calculate borders (difference between window and client)
+    border_left = (window_width - client_width) // 2
+    border_top = window_height - client_height - border_left
+    
+    # Get client area position in screen coordinates
+    point = win32gui.ClientToScreen(hwnd, (0, 0))
+    
+    print(f"Window DPI scale: {dpi_scale:.2f}x ({int(dpi_scale * 100)}%)")
+    print(f"Window rect: {rect}")
+    print(f"Client area at: ({point[0]}, {point[1]}), size: {client_width}x{client_height}")
+    print(f"Borders - Left/Right: {border_left}px, Top: {border_top}px")
+    
+    return (point[0], point[1], client_width, client_height)
 
 
 def get_process_info(process_name):
@@ -352,20 +438,66 @@ class PyautoguiScreenshotBackend:
 class DxcamScreenshotBackend:
     def __init__(self, bbox, fps):
         import dxcam
-        self.camera = dxcam.create()
+        import win32api
+        import win32con
+        import cv2
+        self.cv2 = cv2
+        
+        # bbox is (l, t, w, h) in absolute screen coordinates
+        l, t, w, h = bbox
+        
+        # ... (rest of the init remains the same until camera.start)
+        cx, cy = l + w // 2, t + h // 2
+        hmonitor = win32api.MonitorFromPoint((cx, cy), win32con.MONITOR_DEFAULTTONEAREST)
+        monitor_info = win32api.GetMonitorInfo(hmonitor)
+        monitor_rect = monitor_info['Monitor'] # (left, top, right, bottom)
+        
+        # Find dxcam output index
+        monitors = win32api.EnumDisplayMonitors()
+        output_idx = 0
+        for i, (hmon, hdc, rect) in enumerate(monitors):
+            if hmon == hmonitor:
+                output_idx = i
+                break
+        
+        # Calculate monitor-relative coordinates for dxcam
+        # dxcam region is (left, top, right, bottom)
+        rel_l = l - monitor_rect[0]
+        rel_t = t - monitor_rect[1]
+        region = (rel_l, rel_t, rel_l + w, rel_t + h)
+        
+        print(f"DXCAM: Monitor detected: {output_idx}, Monitor Rect: {monitor_rect}")
+        print(f"DXCAM: Absolute bbox: {bbox} -> Relative region: {region}")
+        
+        self.camera = dxcam.create(output_idx=output_idx)
         self.bbox = bbox
         self.last_screenshot = None
-        self.camera.start(region=self.bbox, target_fps=fps, video_mode=True)
+        
+        # Validate region against monitor resolution to avoid dxcam errors
+        monitor_w = monitor_rect[2] - monitor_rect[0]
+        monitor_h = monitor_rect[3] - monitor_rect[1]
+        
+        # Clamp region to monitor bounds to be safe
+        final_l = max(0, min(region[0], monitor_w - 1))
+        final_t = max(0, min(region[1], monitor_h - 1))
+        final_r = max(final_l + 1, min(region[2], monitor_w))
+        final_b = max(final_t + 1, min(region[3], monitor_h))
+        self.region = (final_l, final_t, final_r, final_b)
+        
+        if self.region != region:
+            print(f"DXCAM: Region clamped from {region} to {self.region}")
+
+        self.camera.start(region=self.region, target_fps=fps, video_mode=True)
 
     def screenshot(self):
+        # Returns numpy array instead of PIL Image for speed
         screenshot = self.camera.get_latest_frame()
         if screenshot is None:
-            print("DXCAM failed to capture frame, trying to use the latest screenshot")
             if self.last_screenshot is not None:
                 return self.last_screenshot
             else:
-                return Image.new("RGB", (self.bbox[2], self.bbox[3]), (0, 0, 0))
-        screenshot = Image.fromarray(screenshot)
+                return np.zeros((self.region[3]-self.region[1], self.region[2]-self.region[0], 3), dtype=np.uint8)
+        
         self.last_screenshot = screenshot
         return screenshot
 
@@ -455,20 +587,41 @@ class GamepadEnv(Env):
             }
         )
 
-        # Determine window name
+        # Determine window name and get window handle
         windows = pwc.getAllWindows()
         self.game_window = None
+        self.game_hwnd = None
+        
         for window in windows:
             if window.title == self.game_window_name:
                 self.game_window = window
+                # Get the window handle
+                try:
+                    self.game_hwnd = win32gui.FindWindow(None, self.game_window_name)
+                except:
+                    pass
                 break
 
         if not self.game_window:
             raise Exception(f"No window found with game name: {self.game}")
 
         self.game_window.activate()
-        l, t, r, b = self.game_window.left, self.game_window.top, self.game_window.right, self.game_window.bottom
-        self.bbox = (l, t, r - l, b - t)
+        time.sleep(0.3)  # Wait for window to activate
+        
+        # Get accurate client area coordinates with DPI awareness
+        if self.game_hwnd:
+            l, t, w, h = get_window_client_rect(self.game_hwnd)
+            self.bbox = (l, t, w, h)
+            self.actual_game_width = w
+            self.actual_game_height = h
+            print(f"Game capture area: {w}x{h} at position ({l}, {t})")
+        else:
+            # Fallback to pywinctl if hwnd not found
+            l, t, r, b = self.game_window.left, self.game_window.top, self.game_window.right, self.game_window.bottom
+            self.bbox = (l, t, r - l, b - t)
+            self.actual_game_width = r - l
+            self.actual_game_height = b - t
+            print(f"Warning: Using fallback window detection. Capture area: {self.actual_game_width}x{self.actual_game_height}")
 
         # Initialize speedhack client if using DLL injection
         self.speedhack_client = xsh.Client(process_id=self.game_pid, arch=self.game_arch)
@@ -517,11 +670,19 @@ class GamepadEnv(Env):
         self.gamepad_emulator.step(action)
         start = time.perf_counter()
         self.unpause()
+        
         # Wait until the next step
-        end = start + self.step_duration
+        end = start + duration
         now = time.perf_counter()
-        while now < end:
-            now = time.perf_counter()
+        
+        # Hybrid sleep: sleep for most of the time, then busy-wait for precision
+        remaining = end - now
+        if remaining > 0.002:  # Only sleep if we have enough time
+            time.sleep(remaining - 0.001)
+            
+        while time.perf_counter() < end:
+            pass
+            
         self.pause()
 
     def step(self, action, step_duration=None):
@@ -572,9 +733,12 @@ class GamepadEnv(Env):
         Render the current state of the game window as an observation.
 
         Returns:
-        Image: Observation of the game environment.
+        np.ndarray: Observation of the game environment.
         """
         screenshot = self.screenshot_backend.screenshot()
-        screenshot = screenshot.resize((self.image_width, self.image_height))
+        
+        # Optimize resizing: use cv2 instead of PIL, and only resize if needed
+        if screenshot.shape[1] != self.image_width or screenshot.shape[0] != self.image_height:
+            screenshot = cv2.resize(screenshot, (self.image_width, self.image_height), interpolation=cv2.INTER_AREA)
 
         return screenshot

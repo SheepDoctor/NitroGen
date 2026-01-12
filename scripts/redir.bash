@@ -1,0 +1,1 @@
+ssh -i "C:\Users\Owen\.ssh\whu_w" -CNg -L 5555:127.0.0.1:5555 -p 50903 root@10.254.29.16
